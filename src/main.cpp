@@ -5,11 +5,12 @@
 #include <esp_dmx.h>
 #include <rdm/responder.h>
 #include <FastLED.h>
+#include <Motor.h>
 
 
-#define Microstepping 8
-#define Acceleration 5000*Microstepping
-#define MaxSpeed 500*Microstepping
+#define Microstepping 64
+#define Acceleration 500
+#define MaxSpeed 500
 
 
 #define StartAddres 1
@@ -30,20 +31,18 @@
 ...
 ***************************/
 
-const unsigned int MaxSpeedLED = MaxSpeed*8/3;
-const unsigned int MaxSpeedRef = MaxSpeed*5;
-const float AccelerationLED = Acceleration*8/3;
-const float AccelerationRef = Acceleration*5;
+const unsigned int MaxPanSpeed = MaxSpeed;
+const unsigned int MaxTiltSpeed = MaxSpeed;
+const float AccelerationPan = Acceleration;
+const float AccelerationTilt = Acceleration;
 
 
-const int Offset_LED = 10*Microstepping;
-const int MaxPos_LED = 200*Microstepping*8/3*2; //steps per rev*Microstepping*Gear reatior* 2 rounds
-const int HomePos_LED = MaxPos_LED/2;
+u_int16_t Offset_Pan = 25;
+u_int16_t MaxPos_Pan = 200*14; //steps per rev*Gear reatior* 1,5 rounds
 
 
-const int MaxPos_Ref = 200*Microstepping*5*2; //steps per rev*Microstepping*Gear reatior* 2 rounds
-const int Offset_Ref = MaxPos_Ref/4;
-const int HomePos_Ref = MaxPos_Ref/2;
+u_int16_t MaxPos_Tilt = 250; //steps per rev*Gear reatior* 0.18 rounds
+u_int16_t Offset_Tilt = 5;
 
 
 const int PWMfrequency = 30000;              // Set PWM frequency
@@ -52,9 +51,9 @@ const int dimmerPins[4] = {DimmerPin0, DimmerPin1,DimmerPin2,DimmerPin3};
 int ledcChannels[4] = {0, 1, 2, 3};
 
 
-// Create Stepper Objects
-AccelStepper stepperLED(1, M1_Step, M1_Dir);
-AccelStepper stepperRef(1, M2_Step, M2_Dir);
+Motor MotorPan(M2_Dir, M2_Step, Switch_2, false, MaxPanSpeed, Acceleration, Microstepping, MaxPos_Pan, Offset_Pan);
+Motor Motortilt(M1_Dir, M1_Step, Switch_1, true, MaxTiltSpeed, Acceleration, Microstepping, MaxPos_Tilt, Offset_Tilt);
+
 
 // LED Object
 #define NUM_LEDS 72*4/3
@@ -71,12 +70,11 @@ int enablePin = Max485_TR;
 byte  dmxValues[DMX_PACKET_SIZE];
 byte  dimmerValues[4];
 byte  RGBWValues[72*4];
-uint16_t PanValues[2];
 byte strope = 0;
 
 
 dmx_port_t dmxPort = 1;
-int dmxStartAdresse = StartAddres;
+uint16_t dmxStartAdresse = StartAddres;
 
 unsigned long turnOnTime = 0;
 unsigned long turnOffTime = 0;
@@ -101,22 +99,7 @@ TaskHandle_t dmxTask;
 byte fanValue = 0;
 u_int16_t targetPos[2];
 unsigned long dmxdelaymid = 30;
-void setStepperPosandSpeed(unsigned long dmxDel, long PanV, long TarV, AccelStepper& Stepper, unsigned int MaxSpeedStepper){
-  if (dmxDel < 20) {
-    dmxDel = 20; // Set a minimum delay
-  }
-  long stepsToMoveA = abs(PanV-TarV);
-  long stepsToMoveB = abs(Stepper.distanceToGo());
-  unsigned long speed = (stepsToMoveA+stepsToMoveB)*1000/dmxDel;
-  if (speed < MaxSpeedStepper && speed > 100) {
-    Stepper.setMaxSpeed(speed);
-  } else if (speed <= 1) {
-    Stepper.setMaxSpeed(1);
-  } else {
-    Stepper.setMaxSpeed(MaxSpeedStepper);
-  }
-  Stepper.moveTo(PanV);
-}
+
 
 
 void dmxReadingTask(void *parameter) {
@@ -129,48 +112,14 @@ void dmxReadingTask(void *parameter) {
       if (packet.is_rdm) {
         rdm_send_response(dmxPort);
       }else {
-        unsigned long now = millis(); 
-        unsigned long dmxDelay = now-lastDMXTime;
-        lastDMXTime = now;
-        dmxdelaymid = dmxdelaymid*0.99+dmxDelay*0.01;
-
+        //rdm_get_dmx_start_address(dmxPort,*dmxStartAdresse);
         dmx_read(dmxPort, dmxValues, packet.size);
-        PanValues[0] = map((static_cast<uint16_t>(dmxValues[dmxStartAdresse]) << 8) | dmxValues[dmxStartAdresse+1],0,65535,0,MaxPos_LED);
-        PanValues[1] = map((static_cast<uint16_t>(dmxValues[dmxStartAdresse+2]) << 8) | dmxValues[dmxStartAdresse+3],0,65535,0,MaxPos_Ref);
-        // Clamp values to ensure they are within valid range
-        PanValues[0] = constrain(PanValues[0], 0, MaxPos_LED);
-        PanValues[1] = constrain(PanValues[1], 0, MaxPos_Ref);
-
-        for(int i=0;i<4;i++){
-          dimmerValues[i]=dmxValues[dmxStartAdresse+4+i];
-        }
-        strope = dmxValues[dmxStartAdresse+8];
-        for(int i=0;i<288;i++){
-          RGBWValues[i]=dmxValues[dmxStartAdresse+9+i];
-        }
-
-        for(int i = 0;i<2;i++){
-          if(targetPos[i] != PanValues[i]){
-            long stepsToMoveA = abs(PanValues[i]-targetPos[i]);
-            if (i==0){
-              long stepsToMoveB = abs(stepperLED.distanceToGo());
-              u_int16_t speed = (stepsToMoveA+stepsToMoveB)*1000/dmxdelaymid;
-              
-            if (speed < MaxSpeedLED && speed > 100) {
-                stepperLED.setMaxSpeed(speed);
-            } else if (speed <= 100) {
-                stepperLED.setMaxSpeed(100);
-            } else {
-                stepperLED.setMaxSpeed(MaxSpeedLED);
-            }
-              stepperLED.moveTo(PanValues[i]);
-            }else{
-              setStepperPosandSpeed(dmxdelaymid,PanValues[i],targetPos[i],stepperRef,MaxSpeedRef);
-              //targetPos[i]=PanValues[i];
-            }
-            targetPos[i] = PanValues[i];
-          }
-        }
+        MotorPan.setDMX(dmxValues[dmxStartAdresse],dmxValues[dmxStartAdresse+1]);
+        //Serial.print("pan: ");
+        //Serial.print(dmxValues[dmxStartAdresse+2]);
+        //Serial.print("panfine: ");
+        //Serial.println(dmxValues[dmxStartAdresse+3]);
+        Motortilt.setDMX(dmxValues[dmxStartAdresse+2],dmxValues[dmxStartAdresse+3]);
       }
 
 
@@ -225,117 +174,34 @@ void ledUpdateTask(void *parameter) {
       }
 
     }
-    vTaskDelay(20 / portTICK_PERIOD_MS); // Adjust this delay if needed for smoother updates
+   //vTaskDelay(20 / portTICK_PERIOD_MS); // Adjust this delay if needed for smoother updates
   }
 }
-
-
-
-bool homing(AccelStepper stepper, byte EndStopPin, int maxDis, int homepos, int offset, bool EndstopNS){
-  bool b = true;
-  stepper.setMaxSpeed(MaxSpeed/2);
-  stepper.move(-maxDis*11/10);
-  while(b) { //move while endstop is not closed (low = closed)
-    stepper.run();
-    
-    if (EndstopNS){
-      b = digitalRead(EndStopPin);  
-    }else{
-      b = !digitalRead(EndStopPin);
-    }
-
-    if(stepper.distanceToGo()==0){
-      return false;
-    }
-  }
-  stepper.setCurrentPosition(0);
-  stepper.runToNewPosition(10);
-  b = true;
-  while(b) {
-    stepper.move(-1);
-    stepper.run();
-    if (EndstopNS){
-      b = digitalRead(EndStopPin);  
-    }else{
-      b = !digitalRead(EndStopPin);
-    }
-  }
-  stepper.setCurrentPosition(0);
-  stepper.runToNewPosition(offset);
-  stepper.setCurrentPosition(0);
-  delay(10);
-  return true;
-}
-
 
 
 //__________________________________Setup____________________________________________________
 void setup() {
-  // Initialize the strip object
-  FastLED.addLeds<SK6812, LEDPin, RGB>(leds, NUM_LEDS);
-  //strip.begin();
-  //strip.show(); // Initialize all pixels to 'off'
-  //LED PWM Pins
-  for (int i = 0; i < 4; i++) {
-    ledcSetup(ledcChannels[i], PWMfrequency, PWMresolution);   // Setup channel with frequency and resolution
-    ledcAttachPin(dimmerPins[i], ledcChannels[i]);       // Attach pin to channel
-    ledcWrite(ledcChannels[i], 0);                       // Set initial duty cycle to 0 (off)
-  }
   //Fan pins
   pinMode(Fan_1, OUTPUT);
   pinMode(Fan_2, OUTPUT);
   //digitalWrite(Fan_1, HIGH);
   digitalWrite(Fan_2, LOW);
   analogWrite(Fan_1, 200);
-  //Endstop Pins
-  pinMode(Switch_1, INPUT);
-  pinMode(Switch_2, INPUT);
+
 
   //Stepper Setup
   pinMode(StepperEnable, OUTPUT);
   digitalWrite(StepperEnable, LOW);
-  stepperLED.setMaxSpeed(MaxSpeedLED);
-  stepperRef.setMaxSpeed(MaxSpeedRef);
 
-  stepperLED.setAcceleration(AccelerationLED);
-  stepperRef.setAcceleration(AccelerationRef);
   //DMX Setup
   pinMode(Max485_TR, OUTPUT);
   digitalWrite(Max485_TR, LOW);
   delay(1000);
 
   //homing sequenz
-  homing(stepperRef,Switch_2,MaxPos_Ref,HomePos_Ref,Offset_Ref,true);
-  if(homing(stepperLED,Switch_1,MaxPos_LED,HomePos_LED,Offset_LED,false)){
-    for(int p=0;p<3;p++){
-      for(int i = 0; i<4; i++){
-        setAllLED(0);
-        ledcWrite(ledcChannels[i],255);
-        delay(100);
-      }
-    }
-    setAllLED(0);
-  }else{
-    for(int i=0;i<5;i++){
-      setAllLED(0);
-      delay(80);
-      setAllLED(255);
-      delay(30);
-    }
-    setAllLED(0);
-    digitalWrite(StepperEnable, HIGH);
-    while(true){}
-  }
+  MotorPan.Rotary_homing();
+  Motortilt.Switch_homing();
   
-    // Create a task to handle DMX reading on core 0
-  xTaskCreatePinnedToCore(
-    dmxReadingTask,    // Function that implements the task
-    "DMX Task",        // Name of the task
-    4096 ,              // Stack size in words
-    NULL,              // Task input parameter
-    1,                 // Priority of the task
-    &dmxTask,          // Task handle
-    0);                // Run on core 0
 
 
   // Start the receiver
@@ -349,7 +215,7 @@ void setup() {
     1 DMX slot in its footprint. */
   dmx_config_t config = DMX_CONFIG_DEFAULT;
   dmx_personality_t personalities[] = {
-    {1, "Default Personality"}
+    {4, "PanF TiltF"}
   };
   int personality_count = 1;
   dmx_driver_install(dmxPort, &config, personalities, personality_count);
@@ -369,87 +235,20 @@ void setup() {
     variables to go out of scope can result in undesired behavior during RDM
     response callbacks. */
 
-  xTaskCreatePinnedToCore(
-    ledUpdateTask,     // Function that implements the task
-    "LED Update Task", // Name of the task
-    2048,              // Stack size in words
-    NULL,              // Task input parameter
-    1,                 // Priority of the task
-    &ledTask,          // Task handle
-    0                  // Run on core 1 (different from the DMX and stepper core)
-  );
+    // Create a task to handle DMX reading on core 0
+    xTaskCreatePinnedToCore(
+      dmxReadingTask,    // Function that implements the task
+      "DMX Task",        // Name of the task
+      4096 ,              // Stack size in words
+      NULL,              // Task input parameter
+      1,                 // Priority of the task
+      &dmxTask,          // Task handle
+      0);                // Run on core 0
 
 
 }
 
-
-
-
 void loop() {
-  stepperRef.run();
-  stepperLED.run();
-
-  
-
-
-
-
-  /* int read = dmxRx.readPacket(DMXValue, StartAddres, 7);
-  if(read == 7) {
-    if(enable==false){
-      digitalWrite(StepperEnable, LOW);
-      enable = true;
-    }
-    lastDMXTime = currentTime;
-    //strope
-    if(DMXValue[6] != 0)
-    {
-      int t = (255 - DMXValue[6]) * 2;
-      if(on)
-      {
-        const long onTime = currentTime - turnOnTime;
-        if(onTime > 4)
-        {
-          on = false;
-          //turn led off
-          setAllLED(0);
-          turnOffTime = currentTime;
-        }
-      }
-      else
-      {
-        const long offTime = currentTime - turnOffTime;
-        if(offTime > t)
-        {
-          on = true;
-          //turn led on
-          analogWrite(DimmerPin0,DMXValue[2]);
-          analogWrite(DimmerPin1,DMXValue[3]);
-          analogWrite(DimmerPin2,DMXValue[4]);
-          analogWrite(DimmerPin3,DMXValue[5]);
-          turnOnTime = currentTime;
-        }
-      }
-    } else 
-    {
-        analogWrite(DimmerPin0, DMXValue[2]);
-        analogWrite(DimmerPin1, DMXValue[3]);
-        analogWrite(DimmerPin2, DMXValue[4]);
-        analogWrite(DimmerPin3, DMXValue[5]);
-    }
-  
-    stepperLED.setSpeed(DMXValue[0]);
-    stepperRef.moveTo(map(DMXValue[1],0,255,ClosePos,OpenPos));
-  } else{
-    if(((currentTime-lastDMXTime)>5000)&&enable==true){ //DMX timeout
-      //turn off LED's
-      setAllLED(0);
-      //close spheer
-      stepperRef.runToNewPosition(ClosePos);
-      //disable Stepper
-      digitalWrite(StepperEnable, HIGH);
-      enable=false;
-
-    }
-  } */
+  MotorPan.update();
+  Motortilt.update();
 }
