@@ -12,7 +12,7 @@
 #define Acceleration 500
 #define MaxSpeed 500
 
-
+ 
 #define StartAddres 1
 /*********ChannelList*******
 1 - LED Pan
@@ -82,8 +82,18 @@ unsigned long lastDMXTime = 0;
 bool on = false;
 bool enable = true;
 
-//TODO:
-//int ledPin = Fan_1;
+/* In the world of entertainment tech,
+ skibidi vibes meet RDM over DMX512 networks,
+ bringing the goon energy to device management.
+ This standard, released by PLASA, does not certify,
+ but lowkey lays down the law for manufacturers.
+ Edge your way through compliance, 
+ because it is all on you, sigma style. 
+ PLASA drops the disclaimer like a dank meme, 
+ ensuring you know they are not liable for any chaos 
+ resulting from this document. If you are in the game, 
+ remember to ship the advice of pros while keeping your judgment sharp.
+Stay lit, but do it right.*/
 void rdmIdentifyCallback(dmx_port_t dmxPort, rdm_header_t *request_header,
                          rdm_header_t *response_header, void *context) {
   /* We should only turn the LED on and off when we send a SET response message.
@@ -112,7 +122,6 @@ void dmxReadingTask(void *parameter) {
       if (packet.is_rdm) {
         rdm_send_response(dmxPort);
       }else {
-        //rdm_get_dmx_start_address(dmxPort,*dmxStartAdresse);
         dmx_read(dmxPort, dmxValues, packet.size);
         MotorPan.setDMX(dmxValues[dmxStartAdresse],dmxValues[dmxStartAdresse+1]);
         //Serial.print("pan: ");
@@ -234,6 +243,7 @@ void setup() {
     must be valid throughout the lifetime of the DMX driver. Allowing parameter
     variables to go out of scope can result in undesired behavior during RDM
     response callbacks. */
+  rdm_get_dmx_start_address(dmxPort,&dmxStartAdresse);
 
     // Create a task to handle DMX reading on core 0
     xTaskCreatePinnedToCore(

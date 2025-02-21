@@ -1,0 +1,91 @@
+#include <Arduino.h>
+#include <PinConfig.h>
+#include <AccelStepper.h>
+#include <Motor.h>
+
+
+#define Microstepping 8
+#define Acceleration 2000
+#define MaxSpeed 1200
+
+
+#define StartAddres 1
+/*********ChannelList*******
+1 - LED Pan
+2 - LED Pan fine
+3 - Ref Pan
+4 - Ref Pan fine
+5 - intensyty Led 1
+6 - intensyty Led 2
+7 - intensyty Led 3
+8 - intensyty Led 4
+9 - Strope
+10 - LEDPixel 1 red
+11 - LEDPixel 1 green
+12 - LEDPixel 1 blue
+13 - LEDPixel 1 white
+...
+***************************/
+
+const unsigned int MaxPanSpeed = MaxSpeed;
+const unsigned int MaxTiltSpeed = MaxSpeed;
+const float AccelerationPan = Acceleration;
+const float AccelerationTilt = Acceleration;
+
+
+u_int16_t Offset_Pan = 25;
+u_int16_t MaxPos_Pan = 200*14; //steps per rev*Gear reatior* 1,5 rounds
+
+
+u_int16_t MaxPos_Tilt = 250; //steps per rev*Gear reatior* 0.18 rounds
+u_int16_t Offset_Tilt = 5;
+
+
+
+Motor MotorPan(M2_Dir, M2_Step, Switch_2, false, MaxPanSpeed, Acceleration, Microstepping, MaxPos_Pan, Offset_Pan);
+Motor Motortilt(M1_Dir, M1_Step, Switch_1, true, MaxTiltSpeed, Acceleration, Microstepping, MaxPos_Tilt, Offset_Tilt);
+
+
+byte fanValue = 0;
+long targetPos[2];
+long currentPos[2];
+unsigned long dmxdelaymid = 30;
+
+unsigned long lastRead = 0;
+
+//__________________________________Setup____________________________________________________
+void setup() {
+  //Fan pins
+  pinMode(Fan_1, OUTPUT);
+  pinMode(Fan_2, OUTPUT);
+  //digitalWrite(Fan_1, HIGH);
+  digitalWrite(Fan_2, LOW);
+  analogWrite(Fan_1, 200);
+
+
+  //Stepper Setup
+  pinMode(StepperEnable, OUTPUT);
+  digitalWrite(StepperEnable, LOW);
+
+  //DMX Setup
+  pinMode(Max485_TR, OUTPUT);
+  digitalWrite(Max485_TR, LOW);
+  delay(1000);
+
+}
+
+void loop() {
+  unsigned long now = millis();
+  if(lastRead-now>100){
+    lastRead=now;    
+    if(MotorPan.get_endstop()){
+      MotorPan.move(10000);
+    }
+    if(Motortilt.get_endstop()){
+      MotorPan.move(-10000);
+    }
+  }
+
+  MotorPan.update();
+  Motortilt.update();
+}

@@ -33,7 +33,12 @@ class Motor {
 
 
         }
-
+        void setPos(long new_pos){
+            stepper.moveTo(new_pos);
+        }
+        void move(long dis){
+            stepper.move(dis);
+        }
         void update(){
             stepper.run();
         }
@@ -97,7 +102,14 @@ class Motor {
             delay(10);
             return true;
         }
+        bool get_endstop(){
+            if(digitalRead(EndPin)){
+                return false;
+            }else{
+                return true;
+            }
 
+        }
         bool Switch_homing(){
             bool b = true;
             stepper.setMaxSpeed(maxSpeed/2);
