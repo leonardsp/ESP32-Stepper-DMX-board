@@ -5,6 +5,8 @@
 2   - PanLED fine  
 3   - PanRef  
 4   - PanRef fine  
+5   - PanLEDinv (speed 0 Stop 1-127 Speed 
+6   - PanRefinv
 5   - Dimmer 0  
 6   - Dimmer 0 fine  
 7   - Dimmer 1  
@@ -37,3 +39,4 @@ WLED:
 33	- Red Tertiary  
 34	- Green Tertiary  
 35	- Blue Tertiary  
+
