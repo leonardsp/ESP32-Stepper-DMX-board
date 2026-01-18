@@ -23,7 +23,7 @@
 20  - Dimmer 6 fine  
 21  - Dimmer 7  
 22  - Dimmer 7 fine
-23  - Strope (0 Off / 1-255 Speed)
+23  - Strope (0 Off / 1-255 Speed)  
 WLED:  
 24  - Master Dimmer  
 25  - Effect mode ID  
@@ -40,5 +40,6 @@ WLED:
 36	- Red Tertiary  
 37	- Green Tertiary  
 38	- Blue Tertiary  
+
 
 
