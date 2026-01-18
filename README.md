@@ -40,6 +40,11 @@ WLED:
 36	- Red Tertiary  
 37	- Green Tertiary  
 38	- Blue Tertiary  
+## Connector Pinout  
+1 - GND  
+2 - +24V  
+3 - DMX_B (xlr pin 2)  
+4 - DMX_A (xlr pin 3)  
 
 
 
