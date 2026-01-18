@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <PinConfig.h>
+#include "pinConfig.h"
 #include <AccelStepper.h>
 #include <cstring>
 #include <esp_dmx.h>

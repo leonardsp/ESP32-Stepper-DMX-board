@@ -1,0 +1,47 @@
+#include <Adafruit_NeoPixel.h>
+
+// Number of LEDs in the strip
+#define NUM_LEDS 72
+
+
+// Create the NeoPixel object with RGBW color type
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, LED_PIN, NEO_RGBW + NEO_KHZ800);
+
+void setup() {
+  // Initialize the strip object
+  strip.begin();
+  strip.show(); // Initialize all pixels to 'off'
+}
+
+// Function to set all pixels using an array of values (r, g, b, w, ...)
+void setAllPixels(uint8_t* colors) {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    // Each LED has 4 values: r, g, b, w
+    int index = i * 4;
+    uint8_t r = colors[index];
+    uint8_t g = colors[index + 1];
+    uint8_t b = colors[index + 2];
+    uint8_t w = colors[index + 3];
+    
+    // Set the color of the LED
+    strip.setPixelColor(i, strip.Color(r, g, b, w));
+  }
+  
+  // Update the strip to show the new colors
+  strip.show();
+}
+
+void loop() {
+  // Example usage: an array to set all LEDs to random colors
+  uint8_t ledColors[NUM_LEDS * 4];
+
+  // Fill the array with random colors for demonstration
+  for (int i = 0; i < NUM_LEDS * 4; i++) {
+    ledColors[i] = random(0, 256); // Random value between 0 and 255
+  }
+
+  // Set all the LEDs using the array
+  setAllPixels(ledColors);
+
+  delay(1000); // Wait for a second before updating again
+}
