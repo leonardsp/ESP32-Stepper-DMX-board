@@ -87,13 +87,14 @@ void testDMXSend() {
 void dmxReadingTask(void *parameter) {
   while (true) {
     dmx_packet_t packet;
-    if (dmx_receive(dmxPort, &packet, DMX_TIMEOUT_TICK)) {
+    if (dmx_receive(dmxPort, &packet, pdMS_TO_TICKS(1000))) {
       /* A packet was received! If the packet was RDM, we should send a response.
         We can do this with rdm_send_response(). If the RDM packet isn't meant for
         this device, no response will be sent. */
       if (packet.is_rdm) {
         rdm_send_response(dmxPort);
       }else {
+        memset(dmxValues, 0, DMX_PACKET_SIZE);
         dmx_read(dmxPort, dmxValues, packet.size);
         
         for(int i=0;i<8;i++){
@@ -112,7 +113,7 @@ void dmxReadingTask(void *parameter) {
         lastDMXTime = millis();
       }
     }
-    vTaskDelay(20 / portTICK_PERIOD_MS); // Run this task every 50ms
+    vTaskDelay(1 / portTICK_PERIOD_MS); // Run this task more frequently
   }
 }
 
@@ -184,6 +185,7 @@ void ledUpdateTask(void *parameter) {
 
 //__________________________________Setup____________________________________________________
 void setup() {
+  Serial.begin(115200);
   // Initialize the strip object
   FastLED.addLeds<SK6812, LEDPin, RGB>(leds, NUM_LEDS);
   //strip.begin();
@@ -226,8 +228,9 @@ void setup() {
     1 DMX slot in its footprint. */
   dmx_config_t config = DMX_CONFIG_DEFAULT;
   dmx_personality_t personalities[] = {
-    {1, "Default Personality"}
+    {512, "Full Universe"}
   };
+
   int personality_count = 1;
   dmx_driver_install(dmxPort, &config, personalities, personality_count);
 
@@ -239,6 +242,8 @@ void setup() {
     can pass NULL as the final argument. Don't forget to set the pin mode for
     your LED pin! */
   rdm_register_identify_device(dmxPort, rdmIdentifyCallback, NULL);
+
+  digitalWrite(enablePin, LOW); // Ensure RS485 in receive mode
 
   /* Care should be taken to ensure that the parameters registered for callbacks
     never go out of scope. The variables passed as parameter data for responses
@@ -253,11 +258,11 @@ void setup() {
     NULL,              // Task input parameter
     1,                 // Priority of the task
     &ledTask,          // Task handle
-    0                  // Run on core 1 (different from the DMX and stepper core)
+    1                  // Run on core 1 (different from the DMX core)
   );
 
   // Test DMX send (remove after testing)
-  testDMXSend();
+  // testDMXSend();
 
 }
 
@@ -266,10 +271,4 @@ void setup() {
 
 void loop() {
   // Main loop can be empty or handle other tasks
-  // Test: Send DMX packet every 5 seconds
-  static unsigned long lastTest = 0;
-  if (millis() - lastTest > 5000) {
-    testDMXSend();
-    lastTest = millis();
-  }
 }
