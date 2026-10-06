@@ -3,11 +3,11 @@
 #define Switch_1    35 // not used in led dimmer 
 #define Switch_2    34 // not used in led dimmer
 
-#define DimmerPin0  19 // Motor pin
-#define DimmerPin1  18 // Motor pin
+#define DimmerPin0  19
+#define DimmerPin1  18
 
-#define DimmerPin2   5 // Motor pin
-#define DimmerPin3   4 // Motor pin    
+#define DimmerPin2   5
+#define DimmerPin3   4
 
 #define StepperEnable       22 // not used in led dimmer
 
