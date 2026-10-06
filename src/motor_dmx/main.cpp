@@ -17,15 +17,18 @@
 #define TEST_REF_MOTOR_ONLY 0
 
 /*********ChannelList*******
-1 - LED Pan
-2 - LED Pan fine
-3 - Ref Pan
-4 - Ref Pan fine
-5 - LED Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
-6 - Ref Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
-7 - Reset (0 No 1-255 Start Homing)
-8-240 forward to led_dimmer main.cpp for LED and Dimmer channels
+Absolute channels (start address 241):
+1/241 - LED Pan
+2/242 - LED Pan fine
+3/243 - Ref Pan
+4/244 - Ref Pan fine
+5/245 - LED Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
+6/246 - Ref Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
+7/247 - Reset (0 No 1-255 Start Homing)
+8-248/249-481 led_dimmer main.cpp for LED and Dimmer channels
 ***************************/
+uint16_t dmxStartAdresse  = 1; // Default DMX start address 1 or 241 to fit 2 in one universe
+
 const int GerarRatio_LED = 3; // 20 teeth / 60 teeth
 const int GerarRatio_Ref = 4; // 20 teeth / 80 teeth
 const unsigned int MaxSpeedLED = MaxSpeed*GerarRatio_LED;
@@ -34,13 +37,12 @@ const int AccelerationLED = Acceleration*GerarRatio_LED;  // FastAccelStepper nu
 const int AccelerationRef = Acceleration*GerarRatio_Ref;  // FastAccelStepper nutzt Hz/s
 
 
-const int Offset_LED = -4*GerarRatio_LED*Microstepping;
+const int Offset_LED = (46-50)*GerarRatio_LED*Microstepping; //lamp 1: 46, lamp 2 has +90° offset
 const int MaxPos_LED = 200*Microstepping*GerarRatio_LED*2; //steps per rev*Microstepping*Gear reatior* 2 rounds
 const int HomePos_LED = MaxPos_LED/2;
 
-
+const int Offset_Ref = 26*GerarRatio_Ref*Microstepping; //lamp 1: 16, lamp 2 has +90° offset
 const int MaxPos_Ref = 200*Microstepping*GerarRatio_Ref*2; //steps per rev*Microstepping*Gear reatior* 2 rounds
-const int Offset_Ref = 15*GerarRatio_Ref*Microstepping;
 const int HomePos_Ref = MaxPos_Ref/2;
 
 // Create FastAccelStepper Engine and Stepper Objects
@@ -56,7 +58,6 @@ byte  dmxValues[DMX_PACKET_SIZE] = {0}; // Initialize to zeros
 volatile uint16_t PanValues[2] = {0, 0}; // Initialize to zeros
 
 dmx_port_t dmxPort = 1;
-uint16_t dmxStartAdresse  = 1; // Default DMX start address
 
 unsigned long lastDMXTime = 0;
 bool enable = true;

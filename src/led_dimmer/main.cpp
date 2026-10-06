@@ -13,35 +13,38 @@
 #include <WiFi.h>
 
 
-#define StartAddres 8
+#define StartAddres 249
 /*********ChannelList*******
 Fixture-relative channels:
-1   - Dimmer 0 coarse
-2   - Dimmer 0 fine
-3   - Dimmer 1 coarse
-4   - Dimmer 1 fine
-5   - Dimmer 2 coarse
-6   - Dimmer 2 fine
-7   - Dimmer 3 coarse
-8   - Dimmer 3 fine
-9   - Dimmer 4 coarse
-10  - Dimmer 4 fine
-11  - Dimmer 5 coarse
-12  - Dimmer 5 fine
-13  - Dimmer 6 coarse
-14  - Dimmer 6 fine
-15  - Dimmer 7 coarse
-16  - Dimmer 7 fine
-17  - Strobe (0 = off, 1..255 = speed)
-18  - Pixel 1 Red
-19  - Pixel 1 Green
-20  - Pixel 1 Blue
-...
-231 - Pixel 72 Red
-232 - Pixel 72 Green
-233 - Pixel 72 Blue
+8/249   - Dimmer 0 coarse
+9/250   - Dimmer 0 fine
+10/251   - Dimmer 1 coarse
+11/252   - Dimmer 1 fine
+12/253   - Dimmer 2 coarse
+13/254   - Dimmer 2 fine
+14/255   - Dimmer 3 coarse
+15/256   - Dimmer 3 fine
+16/257   - Dimmer 4 coarse
+17/258  - Dimmer 4 fine
+18/259  - Dimmer 5 coarse
+19/260  - Dimmer 5 fine
+20/261  - Dimmer 6 coarse
+21/262  - Dimmer 6 fine
+22/263  - Dimmer 7 coarse
+24/264  - Dimmer 7 fine
 
-With StartAddres 8 (combined with motor_dmx): absolute DMX channels are 8-240.
+25/265  - Strobe (0 = off, 1..255 = speed)
+
+26/266  - Pixel 1 Red
+27/267  - Pixel 1 Green
+28/268  - Pixel 1 Blue
+...
+231/480 - Pixel 72 Red
+232/481 - Pixel 72 Green
+233/482 - Pixel 72 Blue
+
+
+With StartAddres 8/249 (combined with motor_dmx at 241-247): absolute DMX channels are 249-481.
 ***************************/
 
 
