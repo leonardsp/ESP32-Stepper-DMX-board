@@ -46,6 +46,8 @@ const int MaxPos_LED = 200*Microstepping*GerarRatio_LED*2; //steps per rev*Micro
 const int HomePos_LED = MaxPos_LED/2;
 
 int Offset_Ref = 25*GerarRatio_Ref*Microstepping; //lamp 1: 16, lamp 2 has +90° offset
+bool flipLED = false; // Inverts the motor direction pin, as if the motor was wired the other way round
+bool flipRef = false;
 int savedOffset_LED = 0; // Last persisted values, for the config page reset button
 int savedOffset_Ref = 0;
 const int MaxPos_Ref = 200*Microstepping*GerarRatio_Ref*2; //steps per rev*Microstepping*Gear reatior* 2 rounds
@@ -670,6 +672,8 @@ void loadConfig() {
   if (addr >= 1 && addr <= MAX_START_ADDRESS) dmxStartAdresse = addr;
   Offset_LED = constrain(prefs.getInt("offLedS", Offset_LED), -MAX_OFFSET_LED, MAX_OFFSET_LED);
   Offset_Ref = constrain(prefs.getInt("offRefS", Offset_Ref), -MAX_OFFSET_REF, MAX_OFFSET_REF);
+  flipLED = prefs.getBool("flipLed", false);
+  flipRef = prefs.getBool("flipRef", false);
   prefs.getString("name", "").toCharArray(lampName, sizeof(lampName));
   prefs.end();
   savedOffset_LED = Offset_LED;
@@ -681,6 +685,8 @@ void saveConfig() {
   prefs.putUShort("addr", dmxStartAdresse);
   prefs.putInt("offLedS", Offset_LED);
   prefs.putInt("offRefS", Offset_Ref);
+  prefs.putBool("flipLed", flipLED);
+  prefs.putBool("flipRef", flipRef);
   prefs.putString("name", lampName);
   prefs.end();
   savedOffset_LED = Offset_LED;
@@ -721,6 +727,11 @@ String configPage() {
   html += F("'></label>");
   html += offsetRow("Offset LED", "offLed", Offset_LED);
   html += offsetRow("Offset Ref", "offRef", Offset_Ref);
+  html += F("<label><input type='checkbox' name='flipLed' value='1'");
+  if (flipLED) html += F(" checked");
+  html += F("> Flip axis LED</label><label><input type='checkbox' name='flipRef' value='1'");
+  if (flipRef) html += F(" checked");
+  html += F("> Flip axis Ref</label>");
   html += F("<button id='save' type='submit'>Save</button></form>"
             "<script>const R={offLed:");
   html += MAX_OFFSET_LED;
@@ -778,7 +789,12 @@ void handleSave() {
   }
   lampName[n] = 0;
 
+  bool newFlipLED = webServer.hasArg("flipLed");
+  bool newFlipRef = webServer.hasArg("flipRef");
   dmxStartAdresse = (uint16_t)addr;
+  // Motors hold still while the config WiFi is active, so the direction can be swapped safely
+  if (newFlipLED != flipLED) { flipLED = newFlipLED; stepperLED->setDirectionPin(M1_Dir, !flipLED); }
+  if (newFlipRef != flipRef) { flipRef = newFlipRef; stepperRef->setDirectionPin(M2_Dir, !flipRef); }
   setOffsetsLive((int)offLed, (int)offRef);
   saveConfig();
   rdm_set_dmx_start_address(dmxPort, dmxStartAdresse);
@@ -864,7 +880,7 @@ void setup() {
     Serial.println("Stepper objects created successfully");
     
     // Configure LED stepper
-    stepperLED->setDirectionPin(M1_Dir);
+    stepperLED->setDirectionPin(M1_Dir, !flipLED);
     stepperLED->setEnablePin(StepperEnable, true);
     stepperLED->setAutoEnable(false);  // Stepper bleibt permanent enabled
     stepperLED->setSpeedInHz(MaxSpeedLED);
@@ -877,7 +893,7 @@ void setup() {
     Serial.println(AccelerationLED);
     
     // Configure Ref stepper
-    stepperRef->setDirectionPin(M2_Dir);
+    stepperRef->setDirectionPin(M2_Dir, !flipRef);
     stepperRef->setEnablePin(StepperEnable, true);
     stepperRef->setAutoEnable(false);  // Stepper bleibt permanent enabled
     stepperRef->setSpeedInHz(MaxSpeedRef);
