@@ -11,6 +11,9 @@
 #include <dmx/hal/include/nvs.h>
 #include <FastLED.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 
 
 #define StartAddres 249
@@ -31,17 +34,17 @@ Fixture-relative channels:
 20/261  - Dimmer 6 coarse
 21/262  - Dimmer 6 fine
 22/263  - Dimmer 7 coarse
-24/264  - Dimmer 7 fine
+23/264  - Dimmer 7 fine
 
-25/265  - Strobe (0 = off, 1..255 = speed)
+24/265  - Strobe (0 = off, 1..255 = speed)
 
-26/266  - Pixel 1 Red
-27/267  - Pixel 1 Green
-28/268  - Pixel 1 Blue
+25/266  - Pixel 1 Red
+26/267  - Pixel 1 Green
+27/268  - Pixel 1 Blue
 ...
-231/480 - Pixel 72 Red
-232/481 - Pixel 72 Green
-233/482 - Pixel 72 Blue
+239/480 - Pixel 72 Red
+240/481 - Pixel 72 Green
+241/482 - Pixel 72 Blue
 
 
 With StartAddres 8/249 (combined with motor_dmx at 241-247): absolute DMX channels are 249-481.
@@ -50,7 +53,22 @@ With StartAddres 8/249 (combined with motor_dmx at 241-247): absolute DMX channe
 
 const int PWMfrequency = 1000;              // Set PWM frequency
 const int PWMresolution = 16;                // Set PWM resolution to 16 bits
-const float PWM_MAX_LIMIT = 0.3;            // Limit PWM to 30% (52428 out of 65535)
+float pwmMaxLimit = 0.3f;                   // Max COB brightness as fraction; default 30%, configurable via web page
+uint8_t maxBrightnessPct = 30;
+uint8_t dimmerOrder[8] = {0, 1, 2, 3, 4, 5, 6, 7}; // DMX dimmer i drives output pin dimmerPins[dimmerOrder[i]]
+bool flipPixels = false;                    // Reverse LED strip pixel order
+volatile bool dmxSeen = false;              // Set once a valid DMX frame has arrived
+
+// DMX color order of the 3 slots per pixel; pixel output to the strip is always GRB.
+// COLOR_MAPS[order] = {DMX slot of red, green, blue}.
+const char *const COLOR_ORDER_NAMES[6] = {"RGB", "RBG", "GRB", "GBR", "BRG", "BGR"};
+const uint8_t COLOR_MAPS[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {2, 0, 1}, {1, 2, 0}, {2, 1, 0}};
+uint8_t colorOrder = 0;
+
+// Config-page test outputs; testColor: 0 off, 1 red, 2 green, 3 blue, 4 white, 5 chase
+volatile bool testOverrideActive = false;
+bool testCob[8] = {false};
+volatile uint8_t testColor = 0;
 const int dimmerPins[8] = {DimmerPin0, DimmerPin1, DimmerPin2, DimmerPin3, DimmerPin4, DimmerPin5, DimmerPin6, DimmerPin7};
 int ledcChannels[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 
@@ -168,8 +186,8 @@ uint8_t dmxReconnectFramesRemaining = 0;
 
 // Clamps the configured DMX start address to the valid fixture range.
 uint16_t clampStartAddress(uint16_t startAddress) {
-  if (startAddress < StartAddres) {
-    startAddress = StartAddres;
+  if (startAddress < 1) {
+    startAddress = 1;
   }
   if (startAddress > DMX_MAX_START_ADDRESS) {
     startAddress = DMX_MAX_START_ADDRESS;
@@ -180,7 +198,7 @@ uint16_t clampStartAddress(uint16_t startAddress) {
 // Scales a raw 16-bit dimmer value with global power and thermal limits.
 uint16_t scaleDimmerValue(uint16_t value) {
   const float rdmMaxPowerLimit = static_cast<float>(rdmMaxPowerPercent) / 100.0f;
-  return static_cast<uint16_t>(value * PWM_MAX_LIMIT * rdmMaxPowerLimit * thermalOutputLimit);
+  return static_cast<uint16_t>(value * pwmMaxLimit * rdmMaxPowerLimit * thermalOutputLimit);
 }
 
 // Validates that the received DMX packet includes all slots needed by the
@@ -630,6 +648,7 @@ void readDmxOnce() {
     return;
   }
 
+  dmxSeen = true;
   ensurePwmInitialized();
 
   memset(dmxValues, 0, DMX_PACKET_SIZE);
@@ -701,15 +720,19 @@ void readDmxOnce() {
 // Initializes FastLED once before any pixel buffer writes.
 void ensureFastLedsInitialized() {
   if (!fastLedsInitialized) {
-    FastLED.addLeds<WS2813, LEDPin, RGB>(leds, NUM_LEDS);
+    FastLED.addLeds<WS2813, LEDPin, GRB>(leds, NUM_LEDS);
     fastLedsInitialized = true;
   }
 }
 
 // Copies RGB byte data into the LED buffer and flushes it to the strip.
-void setAllPixels(const uint8_t *colors) {
+void setAllPixels(const uint8_t *colors, bool applyDmxColorMap = true) {
   ensureFastLedsInitialized();
-  memcpy(leds, colors, sizeof(RGBValues));
+  const uint8_t *map = COLOR_MAPS[applyDmxColorMap ? colorOrder : 0];
+  for (int i = 0; i < NUM_LEDS; i++) {
+    const uint8_t *px = colors + 3 * (flipPixels ? NUM_LEDS - 1 - i : i);
+    leds[i] = CRGB(px[map[0]], px[map[1]], px[map[2]]);
+  }
   FastLED.setBrightness(static_cast<uint8_t>(255.0f * thermalOutputLimit));
   // Send the RGB data to the LEDs
   FastLED.show();
@@ -751,7 +774,7 @@ void ensurePwmInitialized() {
 
   for (int i = 0; i < 8; i++) {
     ledcSetup(ledcChannels[i], PWMfrequency, PWMresolution);
-    ledcAttachPin(dimmerPins[i], ledcChannels[i]);
+    ledcAttachPin(dimmerPins[dimmerOrder[i]], ledcChannels[i]);
     ledcWrite(ledcChannels[i], 0);
   }
 
@@ -795,6 +818,33 @@ void ledUpdateTask(void *parameter) {
 
     updateRdmHours();
     updateThermalControlAndTelemetry();
+
+    // Config page test: drive selected COB outputs and strip color directly.
+    if (testOverrideActive && !thermalShutdownActive) {
+      strope = 0;
+      for (int i = 0; i < 8; i++) {
+        ledcWrite(ledcChannels[i], scaleDimmerValue(testCob[i] ? 65535 : 0));
+      }
+      const uint8_t c = testColor;
+      for (int p = 0; p < NUM_LEDS; p++) {
+        if (c == 5) {
+          // Chase: a white head with a short tail runs from pixel 1 to pixel 72.
+          const int head = (millis() / 40) % (NUM_LEDS + 10);
+          const int d = head - p;
+          const uint8_t v = (d >= 0 && d < 6) ? 255 - d * 45 : 0;
+          RGBValues[3 * p] = v;
+          RGBValues[3 * p + 1] = v;
+          RGBValues[3 * p + 2] = v;
+          continue;
+        }
+        RGBValues[3 * p] = (c == 1 || c == 4) ? 255 : 0;
+        RGBValues[3 * p + 1] = (c == 2 || c == 4) ? 255 : 0;
+        RGBValues[3 * p + 2] = (c == 3 || c == 4) ? 255 : 0;
+      }
+      setAllPixels(RGBValues, false);
+      vTaskDelay(20 / portTICK_PERIOD_MS);
+      continue;
+    }
 
     // During RDM-only discovery there is no DMX data to render. Keep outputs
     // off and avoid LED bus activity so responder timing stays clean.
@@ -877,6 +927,258 @@ void ledUpdateTask(void *parameter) {
 
 
 
+//__________________________________Config WiFi______________________________________________
+Preferences prefs;
+WebServer webServer(80);
+DNSServer dnsServer;
+char lampName[13] = "";
+unsigned long wifiLastActivityMs = 0;
+volatile bool wifiActive = false;
+const unsigned long WIFI_IDLE_TIMEOUT_MS = 2UL * 60UL * 1000UL;
+const unsigned long DMX_STARTUP_WAIT_MS = 2000;
+const char *WIFI_PASSWORD = "lichtauslichtan";
+
+// Order is stored as 8 digits '0'..'7', each used once.
+bool parseOrder(const String &s, uint8_t out[8]) {
+  if (s.length() != 8) return false;
+  uint8_t seen = 0;
+  uint8_t tmp[8];
+  for (int i = 0; i < 8; i++) {
+    int d = s[i] - '0';
+    if (d < 0 || d > 7 || (seen & (1 << d))) return false;
+    seen |= (1 << d);
+    tmp[i] = d;
+  }
+  memcpy(out, tmp, 8);
+  return true;
+}
+
+void loadConfig() {
+  prefs.begin("lamp", false);
+  dmxStartAdresse = clampStartAddress(prefs.getUShort("addr", dmxStartAdresse));
+  maxBrightnessPct = constrain(prefs.getUChar("maxPct", maxBrightnessPct), 1, 100);
+  pwmMaxLimit = maxBrightnessPct / 100.0f;
+  parseOrder(prefs.getString("order", "01234567"), dimmerOrder);
+  flipPixels = prefs.getBool("flip", false);
+  colorOrder = constrain(prefs.getUChar("colOrd", 0), 0, 5);
+  prefs.getString("name", "").toCharArray(lampName, sizeof(lampName));
+  prefs.end();
+}
+
+void saveConfig() {
+  char order[9];
+  for (int i = 0; i < 8; i++) order[i] = '0' + dimmerOrder[i];
+  order[8] = 0;
+  prefs.begin("lamp", false);
+  prefs.putUShort("addr", dmxStartAdresse);
+  prefs.putUChar("maxPct", maxBrightnessPct);
+  prefs.putString("order", order);
+  prefs.putBool("flip", flipPixels);
+  prefs.putUChar("colOrd", colorOrder);
+  prefs.putString("name", lampName);
+  prefs.end();
+}
+
+String configPage() {
+  String html = F("<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                  "<title>Dimmer setup</title><style>body{font-family:sans-serif;max-width:480px;margin:1em auto;padding:0 1em}"
+                  "label{display:block;margin-top:1em}input[type=text],input[type=number]{width:100%;padding:.5em;box-sizing:border-box}"
+                  ".g{display:grid;grid-template-columns:repeat(4,1fr);gap:.5em;margin-top:.5em}"
+                  ".g div{font-size:.8em}.g select{width:100%;padding:.4em}.g button{margin:0}"
+                  "button{margin-top:1em;padding:.7em;width:100%}</style></head><body><h2>LED dimmer setup</h2>"
+                  "<form method='POST' action='/save' onsubmit='return check()'>");
+  html += F("<label>Name (max 12, letters/digits/-/_; used in WiFi name after reboot)<input type='text' name='name' maxlength='12' value='");
+  html += lampName;
+  html += F("'></label><label>DMX start address (1-");
+  html += DMX_MAX_START_ADDRESS;
+  html += F(")<input type='number' name='addr' min='1' max='");
+  html += DMX_MAX_START_ADDRESS;
+  html += F("' value='");
+  html += dmxStartAdresse;
+  html += F("'></label><label>Max COB brightness (1-100 %)<input type='number' name='pct' min='1' max='100' value='");
+  html += maxBrightnessPct;
+  html += F("'></label><label>COB output for each DMX dimmer</label><div class='g'>");
+  for (int i = 0; i < 8; i++) {
+    html += String("<div>Dimmer ") + (i + 1) + "<select id='o" + i + "' name='o" + i + "'>";
+    for (int p = 0; p < 8; p++) {
+      html += String("<option value='") + (p + 1) + "'" + (dimmerOrder[i] == p ? " selected" : "") + ">" + (p + 1) + "</option>";
+    }
+    html += F("</select></div>");
+  }
+  html += F("</div><button type='button' onclick='flipOrder()'>Flip COB order</button>"
+            "<input type='hidden' id='flip' name='flip' value='");
+  html += flipPixels ? '1' : '0';
+  html += F("'><button type='button' id='flipBtn' onclick='flipStrip()'></button>"
+            "<label>DMX color order (slot 1, 2, 3 of each pixel)</label><select name='col' style='width:100%;padding:.4em'>");
+  for (int c = 0; c < 6; c++) {
+    html += String("<option value='") + c + "'" + (colorOrder == c ? " selected" : "") + ">" + COLOR_ORDER_NAMES[c] + "</option>";
+  }
+  html += F("</select><button type='submit'>Save</button></form><h3>Test</h3><div class='g'>");
+  for (int i = 0; i < 8; i++) {
+    html += String("<button type='button' id='t") + i + "' onclick='tCob(" + i + ")'>Dimmer " + (i + 1) + "</button>";
+  }
+  html += F("</div><div class='g'><button type='button' id='c1' onclick='tCol(1)'>Red</button>"
+            "<button type='button' id='c2' onclick='tCol(2)'>Green</button>"
+            "<button type='button' id='c3' onclick='tCol(3)'>Blue</button>"
+            "<button type='button' id='c4' onclick='tCol(4)'>White</button>"
+            "<button type='button' id='c5' onclick='tCol(5)'>Chase</button></div>"
+            "<button type='button' onclick='allOff()'>All off</button>"
+            "<script>let cob=[0,0,0,0,0,0,0,0],col=0;"
+            "function mark(){for(let i=0;i<8;i++)document.getElementById('t'+i).style.background=cob[i]?'#8f8':'';"
+            "for(let c=1;c<6;c++)document.getElementById('c'+c).style.background=col==c?'#8f8':''}"
+            "function sendTest(){fetch('/test',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+            "body:'m='+cob.join('')+'&c='+col})}"
+            "function tCob(i){cob[i]^=1;mark();sendTest()}"
+            "function tCol(c){col=col==c?0:c;mark();sendTest()}"
+            "function allOff(){cob.fill(0);col=0;mark();sendTest()}"
+            "function flipOrder(){for(let i=0;i<8;i++){const s=document.getElementById('o'+i);s.value=9-s.value}}"
+            "function showFlip(){document.getElementById('flipBtn').textContent='Flip LED strip: '+"
+            "(document.getElementById('flip').value=='1'?'ON':'off')}"
+            "function flipStrip(){const e=document.getElementById('flip');e.value=e.value=='1'?'0':'1';showFlip()}"
+            "function check(){const v=new Set();for(let i=0;i<8;i++)v.add(document.getElementById('o'+i).value);"
+            "if(v.size!=8){alert('Each output must be used exactly once');return false}return true}"
+            "showFlip();</script></body></html>");
+  return html;
+}
+
+void handleSave() {
+  wifiLastActivityMs = millis();
+  long addr = webServer.arg("addr").toInt();
+  long pct = webServer.arg("pct").toInt();
+  long col = webServer.arg("col").toInt();
+  char orderStr[9];
+  for (int i = 0; i < 8; i++) {
+    long v = webServer.arg(String("o") + i).toInt();
+    orderStr[i] = (v >= 1 && v <= 8) ? ('0' + v - 1) : 'x';
+  }
+  orderStr[8] = 0;
+  uint8_t newOrder[8];
+  if (addr < 1 || addr > DMX_MAX_START_ADDRESS || pct < 1 || pct > 100 || col < 0 || col > 5 || !parseOrder(String(orderStr), newOrder)) {
+    webServer.send(400, "text/plain", "Invalid value");
+    return;
+  }
+
+  String name = webServer.arg("name");
+  size_t n = 0;
+  for (size_t i = 0; i < name.length() && n < sizeof(lampName) - 1; i++) {
+    char c = name[i];
+    if (isalnum((unsigned char)c) || c == '-' || c == '_') lampName[n++] = c;
+  }
+  lampName[n] = 0;
+
+  dmxStartAdresse = (uint16_t)addr;
+  maxBrightnessPct = (uint8_t)pct;
+  pwmMaxLimit = maxBrightnessPct / 100.0f;
+  if (pwmInitialized) {
+    // Pins are already attached to LEDC channels; move them to the new mapping.
+    for (int i = 0; i < 8; i++) {
+      const int oldPin = dimmerPins[dimmerOrder[i]];
+      ledcDetachPin(oldPin);
+      pinMode(oldPin, OUTPUT);
+      digitalWrite(oldPin, LOW);
+    }
+    memcpy(dimmerOrder, newOrder, 8);
+    for (int i = 0; i < 8; i++) {
+      ledcAttachPin(dimmerPins[dimmerOrder[i]], ledcChannels[i]);
+    }
+  } else {
+    memcpy(dimmerOrder, newOrder, 8);
+  }
+  colorOrder = (uint8_t)col;
+  flipPixels = webServer.arg("flip") == "1";
+  saveConfig();
+  rdm_set_dmx_start_address(dmxPort, dmxStartAdresse);
+
+  webServer.sendHeader("Location", "/");
+  webServer.send(303);
+}
+
+void handleTest() {
+  wifiLastActivityMs = millis();
+  String m = webServer.arg("m");
+  long c = webServer.arg("c").toInt();
+  if (m.length() != 8 || c < 0 || c > 5) {
+    webServer.send(400, "text/plain", "Invalid value");
+    return;
+  }
+  bool any = c != 0;
+  for (int i = 0; i < 8; i++) {
+    testCob[i] = (m[i] == '1');
+    any = any || testCob[i];
+  }
+  testColor = (uint8_t)c;
+  if (any) {
+    ensurePwmInitialized();
+    startLedTaskIfNeeded();
+  }
+  testOverrideActive = any;
+  webServer.send(200, "text/plain", "ok");
+}
+
+void stopConfigWifi(const char *reason) {
+  testOverrideActive = false;
+  webServer.stop();
+  dnsServer.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiActive = false;
+#if SERIAL_DEBUG_ENABLED
+  Serial.printf("Config WiFi off (%s)\n", reason);
+#endif
+}
+
+// Runs on its own task because the DMX loop can block for over a second.
+void configWifiTask(void *parameter) {
+  (void)parameter;
+  while (true) {
+    webServer.handleClient();
+    dnsServer.processNextRequest();
+    if (dmxSeen) {
+      stopConfigWifi("DMX received");
+      break;
+    }
+    const unsigned long nowMs = millis();
+    if (WiFi.softAPgetStationNum() > 0) wifiLastActivityMs = nowMs;
+    if (nowMs - wifiLastActivityMs >= WIFI_IDLE_TIMEOUT_MS) {
+      stopConfigWifi("idle timeout");
+      break;
+    }
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+  }
+  vTaskDelete(NULL);
+}
+
+void startConfigWifi() {
+  uint64_t mac = ESP.getEfuseMac();
+  char suffix[5];
+  snprintf(suffix, sizeof(suffix), "%02X%02X", (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
+  String ssid = String(lampName[0] ? lampName : "Spiess") + "_" + suffix + "_dimmer";
+  const int channels[3] = {1, 6, 11};
+  int channel = channels[(uint8_t)(mac >> 40) % 3];
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid.c_str(), WIFI_PASSWORD, channel);
+
+  webServer.on("/", HTTP_GET, []() {
+    wifiLastActivityMs = millis();
+    webServer.send(200, "text/html", configPage());
+  });
+  webServer.on("/save", HTTP_POST, handleSave);
+  webServer.on("/test", HTTP_POST, handleTest);
+  // Answer every DNS name and redirect unknown URLs so phones treat this as a captive portal
+  dnsServer.start(53, "*", WiFi.softAPIP());
+  webServer.onNotFound([]() {
+    webServer.sendHeader("Location", "http://192.168.4.1/");
+    webServer.send(302);
+  });
+  webServer.begin();
+
+  wifiLastActivityMs = millis();
+  wifiActive = true;
+  xTaskCreatePinnedToCore(configWifiTask, "Config WiFi", 8192, NULL, 1, NULL, 1);
+}
+
+
 //__________________________________Setup____________________________________________________
 // Initializes hardware, DMX/RDM stack, and persisted runtime configuration.
 void setup() {
@@ -884,6 +1186,7 @@ void setup() {
   Serial.begin(115200);
 #endif
   esp_log_level_set("*", ESP_LOG_NONE);
+  loadConfig();
 
   // Disable WiFi and Bluetooth to save power and reduce heat
   WiFi.mode(WIFI_OFF);
@@ -949,7 +1252,7 @@ void setup() {
 
   uint16_t persistedStartAddress = StartAddres;
 #if ENFORCE_FIXED_DMX_START_ADDRESS
-  dmxStartAdresse = clampStartAddress(StartAddres);
+  dmxStartAdresse = clampStartAddress(dmxStartAdresse);
   rdm_set_dmx_start_address(dmxPort, dmxStartAdresse);
 #else
   if (rdm_get_dmx_start_address(dmxPort, &persistedStartAddress)) {
@@ -996,6 +1299,15 @@ void setup() {
     response callbacks. */
 
   lastHoursTickMs = millis();
+
+  // WiFi config is only offered when no DMX is present at startup
+  const unsigned long dmxWaitStart = millis();
+  while (!dmxSeen && millis() - dmxWaitStart < DMX_STARTUP_WAIT_MS) {
+    readDmxOnce();
+  }
+  if (!dmxSeen) {
+    startConfigWifi();
+  }
 }
 
 

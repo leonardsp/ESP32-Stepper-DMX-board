@@ -7,6 +7,9 @@
 #include <rdm/responder.h>
 #include <rdm/responder/include/product_info.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 
 #define Microstepping 32
 #define Acceleration 1500*Microstepping
@@ -18,14 +21,14 @@
 
 /*********ChannelList*******
 Absolute channels (start address 241):
-1/241 - LED Pan
-2/242 - LED Pan fine
-3/243 - Ref Pan
-4/244 - Ref Pan fine
-5/245 - LED Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
-6/246 - Ref Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
-7/247 - Reset (0 No 1-255 Start Homing)
-8-248/249-481 led_dimmer main.cpp for LED and Dimmer channels
+1/242 - LED Pan
+2/243 - LED Pan fine
+3/244 - Ref Pan
+4/245 - Ref Pan fine
+5/246 - LED Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
+6/247 - Ref Pan Inv (0 Stop / 1-127 ccw / 128 Stop /129-255 cw)
+7/248 - Reset (0 No 1-255 Start Homing)
+8-241/249-481 led_dimmer main.cpp for LED and Dimmer channels
 ***************************/
 uint16_t dmxStartAdresse  = 1; // Default DMX start address 1 or 241 to fit 2 in one universe
 
@@ -37,11 +40,14 @@ const int AccelerationLED = Acceleration*GerarRatio_LED;  // FastAccelStepper nu
 const int AccelerationRef = Acceleration*GerarRatio_Ref;  // FastAccelStepper nutzt Hz/s
 
 
-const int Offset_LED = (46-50)*GerarRatio_LED*Microstepping; //lamp 1: 46, lamp 2 has +90° offset
+// Offsets in output-axis microsteps; defaults until saved via the config page
+int Offset_LED = (45-50)*GerarRatio_LED*Microstepping; //lamp 1: 46, lamp 2 has +90° offset
 const int MaxPos_LED = 200*Microstepping*GerarRatio_LED*2; //steps per rev*Microstepping*Gear reatior* 2 rounds
 const int HomePos_LED = MaxPos_LED/2;
 
-const int Offset_Ref = 26*GerarRatio_Ref*Microstepping; //lamp 1: 16, lamp 2 has +90° offset
+int Offset_Ref = 25*GerarRatio_Ref*Microstepping; //lamp 1: 16, lamp 2 has +90° offset
+int savedOffset_LED = 0; // Last persisted values, for the config page reset button
+int savedOffset_Ref = 0;
 const int MaxPos_Ref = 200*Microstepping*GerarRatio_Ref*2; //steps per rev*Microstepping*Gear reatior* 2 rounds
 const int HomePos_Ref = MaxPos_Ref/2;
 
@@ -60,6 +66,7 @@ volatile uint16_t PanValues[2] = {0, 0}; // Initialize to zeros
 dmx_port_t dmxPort = 1;
 
 unsigned long lastDMXTime = 0;
+volatile bool dmxReceived = false; // Set once a valid DMX frame has arrived
 bool enable = true;
 
 // DMX timeout and idle mode
@@ -70,6 +77,7 @@ volatile bool needsRehoming = false; // True when DMX returns after timeout
 // Startup flag to prevent position task from interfering with homing
 volatile bool setupComplete = false;
 volatile bool isHoming = false; // Flag set during homing to pause position task
+volatile bool wifiActive = false; // Config access point is up; motors hold position
 
 // RDM device hours tracking
 unsigned long deviceStartMillis = 0;
@@ -418,7 +426,7 @@ void positionCalculationTask(void *parameter) {
     portEXIT_CRITICAL(&motionDataMux);
     
     // Skip position updates if motors are idle or homing is in progress
-    if (motorsIdle || isHoming) {
+    if (motorsIdle || isHoming || wifiActive) {
       smoothingInitialized = false;
       vTaskDelay(10 / portTICK_PERIOD_MS);
       continue;
@@ -546,6 +554,7 @@ void dmxReadingTask(void *parameter) {
         // Process DMX data
         unsigned long now = millis();
         lastDMXTime = now;
+        dmxReceived = true;
         
         // If motors were idle and DMX returns, trigger rehoming
         if (motorsIdle) {
@@ -622,9 +631,206 @@ void dmxReadingTask(void *parameter) {
 
 
 
+//__________________________________Config WiFi______________________________________________
+Preferences prefs;
+WebServer webServer(80);
+DNSServer dnsServer;
+char lampName[13] = "";
+unsigned long wifiLastActivityMs = 0;
+const unsigned long WIFI_IDLE_TIMEOUT_MS = 2UL * 60UL * 1000UL;
+const unsigned long DMX_STARTUP_WAIT_MS = 2000;
+const char *WIFI_PASSWORD = "lichtauslichtan";
+const int MAX_START_ADDRESS = 506; // 7 channels must fit in 512
+
+// Offset limit is one output revolution (HomePos is half of the two-turn range)
+const int MAX_OFFSET_LED = HomePos_LED;
+const int MAX_OFFSET_REF = HomePos_Ref;
+
+// Moving by the offset change keeps the logical position, so the new offset takes effect without re-homing.
+void shiftAxisLive(FastAccelStepper *stepper, int deltaSteps) {
+  if (deltaSteps == 0) return;
+  long logicalPos = stepper->getCurrentPosition();
+  stepper->move(deltaSteps);
+  while (stepper->isRunning()) { delay(1); }
+  stepper->setCurrentPosition(logicalPos);
+}
+
+void setOffsetsLive(int newLedSteps, int newRefSteps) {
+  int deltaLed = newLedSteps - Offset_LED;
+  int deltaRef = newRefSteps - Offset_Ref;
+  Offset_LED = newLedSteps;
+  Offset_Ref = newRefSteps;
+  shiftAxisLive(stepperLED, deltaLed);
+  shiftAxisLive(stepperRef, deltaRef);
+}
+
+void loadConfig() {
+  prefs.begin("lamp", false);
+  uint16_t addr = prefs.getUShort("addr", dmxStartAdresse);
+  if (addr >= 1 && addr <= MAX_START_ADDRESS) dmxStartAdresse = addr;
+  Offset_LED = constrain(prefs.getInt("offLedS", Offset_LED), -MAX_OFFSET_LED, MAX_OFFSET_LED);
+  Offset_Ref = constrain(prefs.getInt("offRefS", Offset_Ref), -MAX_OFFSET_REF, MAX_OFFSET_REF);
+  prefs.getString("name", "").toCharArray(lampName, sizeof(lampName));
+  prefs.end();
+  savedOffset_LED = Offset_LED;
+  savedOffset_Ref = Offset_Ref;
+}
+
+void saveConfig() {
+  prefs.begin("lamp", false);
+  prefs.putUShort("addr", dmxStartAdresse);
+  prefs.putInt("offLedS", Offset_LED);
+  prefs.putInt("offRefS", Offset_Ref);
+  prefs.putString("name", lampName);
+  prefs.end();
+  savedOffset_LED = Offset_LED;
+  savedOffset_Ref = Offset_Ref;
+}
+
+String offsetRow(const char *label, const char *id, int value) {
+  String row = F("<label>");
+  row += label;
+  row += F("</label><div class='r'>");
+  const char *left[4][2] = {{"-45°", "d-45"}, {"-10°", "d-10"}, {"-1°", "d-1"}, {"-0.1°", "d-0.1"}};
+  const char *right[4][2] = {{"+0.1°", "d0.1"}, {"+1°", "d1"}, {"+10°", "d10"}, {"+45°", "d45"}};
+  for (auto &b : left) {
+    row += String("<button type='button' onclick=\"adj('") + id + "','" + b[1] + "')\">" + b[0] + "</button>";
+  }
+  row += String("<span id='") + id + "T'></span>";
+  for (auto &b : right) {
+    row += String("<button type='button' onclick=\"adj('") + id + "','" + b[1] + "')\">" + b[0] + "</button>";
+  }
+  row += String("</div><div class='r'><button type='button' onclick=\"setv('") + id + "','s')\">Last saved</button>"
+         + "<button type='button' onclick=\"setv('" + id + "','z')\">Zero</button></div>";
+  row += String("<input type='hidden' id='") + id + "' name='" + id + "' value='" + value + "'>";
+  return row;
+}
+
+String configPage() {
+  String html = F("<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                  "<title>Lamp setup</title><style>body{font-family:sans-serif;max-width:480px;margin:1em auto;padding:0 1em}"
+                  "label{display:block;margin-top:1em}input[type=text],input[type=number]{width:100%;padding:.5em;box-sizing:border-box}"
+                  ".r{display:flex;gap:2px;align-items:center}.r button{flex:1;padding:.7em 0;font-size:.8em}"
+                  ".r span{flex:2;text-align:center;font-size:.8em}"
+                  "#save{margin-top:1.5em;padding:.7em;width:100%}</style></head><body><h2>Lamp setup</h2>"
+                  "<form method='POST' action='/save'>");
+  html += F("<label>Name (max 12, letters/digits/-/_; used in WiFi name after reboot)<input type='text' name='name' maxlength='12' value='");
+  html += lampName;
+  html += F("'></label><label>DMX start address (1-506)<input type='number' name='addr' min='1' max='506' value='");
+  html += dmxStartAdresse;
+  html += F("'></label>");
+  html += offsetRow("Offset LED", "offLed", Offset_LED);
+  html += offsetRow("Offset Ref", "offRef", Offset_Ref);
+  html += F("<button id='save' type='submit'>Save</button></form>"
+            "<script>const R={offLed:");
+  html += MAX_OFFSET_LED;
+  html += F(",offRef:");
+  html += MAX_OFFSET_REF;
+  html += F("},S={offLed:");
+  html += savedOffset_LED;
+  html += F(",offRef:");
+  html += savedOffset_Ref;
+  html += F("};let t;"
+            "function setv(id,m){document.getElementById(id).value=m=='z'?0:S[id];show(id);live();}"
+            "function show(id){const v=+document.getElementById(id).value;"
+            "document.getElementById(id+'T').textContent=v+' / '+(v*360/R[id]).toFixed(2)+'\u00b0';}"
+            "function adj(id,c){const e=document.getElementById(id);"
+            "const n=+c.slice(1),s=Math.round(n*R[id]/360);"
+            "e.value=Math.max(-R[id],Math.min(R[id],+e.value+s));show(id);live();}"
+            "function live(){clearTimeout(t);t=setTimeout(()=>{"
+            "fetch('/live',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+            "body:'offLed='+document.getElementById('offLed').value+'&offRef='+document.getElementById('offRef').value})},150)}"
+            "show('offLed');show('offRef');</script></body></html>");
+  return html;
+}
+
+void handleLive() {
+  wifiLastActivityMs = millis();
+  if (webServer.arg("offLed").isEmpty() || webServer.arg("offRef").isEmpty()) {
+    webServer.send(400, "text/plain", "Missing value");
+    return;
+  }
+  long offLed = webServer.arg("offLed").toInt();
+  long offRef = webServer.arg("offRef").toInt();
+  if (abs(offLed) > MAX_OFFSET_LED || abs(offRef) > MAX_OFFSET_REF) {
+    webServer.send(400, "text/plain", "Value out of range");
+    return;
+  }
+  setOffsetsLive((int)offLed, (int)offRef);
+  webServer.send(200, "text/plain", "ok");
+}
+
+void handleSave() {
+  wifiLastActivityMs = millis();
+  long addr = webServer.arg("addr").toInt();
+  long offLed = webServer.arg("offLed").toInt();
+  long offRef = webServer.arg("offRef").toInt();
+  if (addr < 1 || addr > MAX_START_ADDRESS || abs(offLed) > MAX_OFFSET_LED || abs(offRef) > MAX_OFFSET_REF) {
+    webServer.send(400, "text/plain", "Value out of range");
+    return;
+  }
+
+  String name = webServer.arg("name");
+  size_t n = 0;
+  for (size_t i = 0; i < name.length() && n < sizeof(lampName) - 1; i++) {
+    char c = name[i];
+    if (isalnum((unsigned char)c) || c == '-' || c == '_') lampName[n++] = c;
+  }
+  lampName[n] = 0;
+
+  dmxStartAdresse = (uint16_t)addr;
+  setOffsetsLive((int)offLed, (int)offRef);
+  saveConfig();
+  rdm_set_dmx_start_address(dmxPort, dmxStartAdresse);
+
+  webServer.sendHeader("Location", "/");
+  webServer.send(303);
+}
+
+void startConfigWifi() {
+  uint64_t mac = ESP.getEfuseMac();
+  char suffix[5];
+  snprintf(suffix, sizeof(suffix), "%02X%02X", (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
+  String ssid = String(lampName[0] ? lampName : "Spiess") + "_" + suffix + "_motor";
+  const int channels[3] = {1, 6, 11};
+  int channel = channels[(uint8_t)(mac >> 40) % 3];
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid.c_str(), WIFI_PASSWORD, channel);
+
+  webServer.on("/", HTTP_GET, []() {
+    wifiLastActivityMs = millis();
+    webServer.send(200, "text/html", configPage());
+  });
+  webServer.on("/save", HTTP_POST, handleSave);
+  webServer.on("/live", HTTP_POST, handleLive);
+  // Answer every DNS name and redirect unknown URLs so phones treat this as a captive portal
+  dnsServer.start(53, "*", WiFi.softAPIP());
+  webServer.onNotFound([]() {
+    webServer.sendHeader("Location", "http://192.168.4.1/");
+    webServer.send(302);
+  });
+  webServer.begin();
+
+  wifiLastActivityMs = millis();
+  wifiActive = true;
+  Serial.printf("No DMX at startup - config WiFi '%s' (channel %d) at http://%s\n", ssid.c_str(), channel, WiFi.softAPIP().toString().c_str());
+}
+
+void stopConfigWifi(const char *reason) {
+  webServer.stop();
+  dnsServer.stop();
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiActive = false;
+  Serial.printf("Config WiFi off (%s)\n", reason);
+}
+
+
 //__________________________________Setup____________________________________________________
 void setup() {
   Serial.begin(115200);
+  loadConfig();
   
   // Disable WiFi and Bluetooth to save power and reduce heat
   WiFi.mode(WIFI_OFF);
@@ -769,6 +975,13 @@ void setup() {
     &dmxTask,
     0);
 
+  // WiFi config is only offered when no DMX is present at startup
+  unsigned long dmxWaitStart = millis();
+  while (!dmxReceived && millis() - dmxWaitStart < DMX_STARTUP_WAIT_MS) {
+    delay(10);
+  }
+  bool offerConfigWifi = !dmxReceived;
+
   //Homing-Sequenz mit separaten Hall-Sensoren für beide Achsen - BEFORE starting position task
   bool homingSuccess = homeBothAxes();
   
@@ -781,6 +994,10 @@ void setup() {
     1,                        // Priority of the task
     &positionTask,            // Task handle
     1);                       // Run on core 1
+
+  if (offerConfigWifi) {
+    startConfigWifi();
+  }
 
   setupComplete = true; // Signal position task that it can start
   delay(100); // Brief pause to let task initialize
@@ -804,13 +1021,24 @@ void loop() {
   static unsigned long lastTimeoutCheck = 0;
   unsigned long now = millis();
   
+  if (wifiActive) {
+    webServer.handleClient();
+    dnsServer.processNextRequest();
+    if (dmxReceived) {
+      stopConfigWifi("DMX received");
+    } else {
+      if (WiFi.softAPgetStationNum() > 0) wifiLastActivityMs = now;
+      if (now - wifiLastActivityMs >= WIFI_IDLE_TIMEOUT_MS) stopConfigWifi("idle timeout");
+    }
+  }
+
   // Check for DMX timeout every second
   if (now - lastTimeoutCheck >= 1000) {
     lastTimeoutCheck = now;
     unsigned long timeSinceLastDMX = now - lastDMXTime;
     
     // If DMX timeout occurred and motors are not yet idle, disable them
-    if (!motorsIdle && timeSinceLastDMX >= DMX_TIMEOUT_MS) {
+    if (!wifiActive && !motorsIdle && timeSinceLastDMX >= DMX_TIMEOUT_MS) {
       Serial.println("DMX timeout - disabling motors and entering idle mode");
       motorsIdle = true;
       stepperLED->disableOutputs();
